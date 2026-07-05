@@ -366,6 +366,25 @@ static LRESULT CALLBACK mkwin_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 			return 0;
 		} break;
 
+		case WM_MBUTTONDOWN: {
+			ev.type = MKWIN_EV_BUTTON_PRESS;
+			ev.x = (int16_t)LOWORD(lp);
+			ev.y = (int16_t)HIWORD(lp);
+			ev.button = 2;
+			ev.keymod = mkwin_get_keymod();
+			evq_push(owner, &ev);
+			return 0;
+		} break;
+
+		case WM_MBUTTONUP: {
+			ev.type = MKWIN_EV_BUTTON_RELEASE;
+			ev.x = (int16_t)LOWORD(lp);
+			ev.y = (int16_t)HIWORD(lp);
+			ev.button = 2;
+			evq_push(owner, &ev);
+			return 0;
+		} break;
+
 		case WM_MOUSEWHEEL: {
 			int16_t delta = (int16_t)HIWORD(wp);
 			ev.type = MKWIN_EV_BUTTON_PRESS;
