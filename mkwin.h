@@ -272,7 +272,7 @@ MKWIN_API void mkwin_font_close(struct mkwin_font *font);
 // ---------------------------------------------------------------------------
 
 // mkwin creates and places a native child window; the host binds its own GL
-// context to it using mkwin_glview_xid together with mkwin_display.
+// context to it using mkwin_glview_handle together with mkwin_display.
 #ifdef MKWIN_GLVIEW
 
 struct mkwin_glview;
