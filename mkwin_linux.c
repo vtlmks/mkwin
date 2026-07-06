@@ -24,8 +24,8 @@
 // ---------------------------------------------------------------------------
 
 // Every window on the shared X connection, so event routing can reach a window
-// that is not the one currently being polled. The first window opens the
-// Display; the last window closed tears it down.
+// other than the one being polled. First window opens the Display; last closed
+// tears it down.
 static struct mkwin_window *windows[MKWIN_MAX_WINDOWS];
 static uint32_t window_count;
 
@@ -79,9 +79,8 @@ static void mkwin_unregister(struct mkwin_window *win) {
 }
 
 // [=]===^=[ mkwin_publish ]=======================================[=]
-// Push the owned framebuffer pointer, dimensions and scale into the host-
-// designated fields, if the host registered any. Called on open, resize and
-// scale change so the host's cached view always matches mkwin's truth.
+// Push framebuffer pointer, dimensions and scale into the host-designated fields
+// (if any), on open/resize/scale change.
 static void mkwin_publish(struct mkwin_window *win) {
 	if(win->host.out_fb) {
 		*win->host.out_fb = win->pixels;
@@ -140,8 +139,8 @@ static void drop_uri_decode(char *dst, char *src, uint32_t dst_size) {
 }
 
 // [=]===^=[ drop_parse_uri_list ]================================[=]
-// Scratch line buffers are file-scope: the single UI thread parses one drop at
-// a time, and 8 KiB does not belong on the stack.
+// Scratch line buffers are file-scope: one drop is parsed at a time, and this
+// does not belong on the stack.
 static char drop_line[4096];
 static char drop_decoded[4096];
 static void drop_parse_uri_list(struct mkwin_window *win, char *data, uint32_t len) {
@@ -339,14 +338,10 @@ static float mkwin_detect_scale(struct mkwin_window *win) {
 // ---------------------------------------------------------------------------
 
 // [=]===^=[ mkwin_fb_resize ]=====================================[=]
-// The software renderer tight-packs the framebuffer at stride = width, so the
-// shared segment only has to hold bytes_per_line * height. Recreating it costs a
-// shmget/shmat plus two XShmAttach/Detach round-trips (~3.5ms), which is fatal
-// when a high-rate mouse floods ConfigureNotify during an interactive resize. So
-// keep the segment across resizes and reallocate only when the new frame no
-// longer fits, over-allocating 1.5x so a continuous drag grows a handful of
-// times instead of once per event. The XImage header is client-side and cheap
-// to swap, so it is rebuilt every time to carry the new dimensions.
+// Keep the shared segment across resizes and reallocate only when the new frame
+// no longer fits (over-allocating 1.5x), so a continuous drag does not thrash
+// shmget/XShmAttach round-trips per ConfigureNotify. The XImage header is cheap,
+// so rebuild it every time to carry the new dimensions.
 static void mkwin_fb_resize(struct mkwin_window *win) {
 	if(win->win_w <= 0 || win->win_h <= 0) {
 		return;
@@ -606,10 +601,8 @@ MKWIN_API void mkwin_resize(struct mkwin_window *win, int32_t w, int32_t h) {
 }
 
 // [=]===^=[ mkwin_move ]==========================================[=]
-// XMoveWindow is a hint that travels through the WM asynchronously; the server's
-// reported position doesn't update until the WM has finished its reparenting /
-// placement work. Poll briefly for the position to catch up so a callsite that
-// follows with mkwin_position observes the move.
+// XMoveWindow is async through the WM; the reported position lags until the WM
+// finishes placement. Poll briefly so a following mkwin_position sees the move.
 MKWIN_API void mkwin_move(struct mkwin_window *win, int32_t x, int32_t y) {
 	XMoveWindow(win->dpy, win->win, x, y);
 	XFlush(win->dpy);
@@ -952,8 +945,7 @@ MKWIN_API void mkwin_wait_fd_remove(int32_t fd) {
 }
 
 // [=]===^=[ mkwin_set_modal_frame_cb ]============================[=]
-// Stored but never fired on X11: there is no modal move/resize loop to animate
-// through. Present so hosts register it identically on both backends.
+// Stored but never fired on X11 (no modal move/resize loop); present for API symmetry.
 MKWIN_API void mkwin_set_modal_frame_cb(struct mkwin_window *win, void (*cb)(struct mkwin_window *win, void *user), void *user) {
 	win->modal_frame_cb = cb;
 	win->modal_frame_user = user;
@@ -1170,9 +1162,8 @@ static uint32_t mkwin_clip_chunk_bytes(Display *dpy) {
 // [=]===^=[ mkwin_clip_incr_begin ]===============================[=]
 // Start an incremental selection transfer to `requestor`: snapshot the data,
 // advertise the size via an INCR-typed property, and watch the requestor for the
-// property deletions that pace the stream. Returns 0 if it cannot start (no free
-// slot, alloc failure, or a same-process requestor whose event mask we must not
-// clobber), leaving the caller to report transfer failure.
+// property deletions that pace the stream. Returns 0 if it cannot start (no slot,
+// OOM, or a same-process requestor whose event mask we must not clobber).
 static uint32_t mkwin_clip_incr_begin(struct mkwin_window *win, Window requestor, Atom property, Atom target) {
 	if(win->incr_send_count >= MKWIN_CLIP_INCR_MAX) {
 		return 0;
@@ -1754,12 +1745,10 @@ MKWIN_API struct mkwin_glview *mkwin_glview_create(struct mkwin_window *win, int
 	}
 	view->win = win;
 
-	// The main window is ARGB32 (for themed transparency on popups etc.), but
-	// inheriting that visual for the glview child is wrong: the GL context
-	// typically has no alpha channel, so after SwapBuffers the drawable's alpha
-	// stays zero and a compositor renders the child as see-through. Force a
-	// 24-bit RGB visual here so the compositor treats the child as fully opaque
-	// regardless of what the app's GL back buffer contains.
+	// The main window is ARGB32, but inheriting that for the glview child is wrong:
+	// the GL context usually has no alpha, so after SwapBuffers the drawable's alpha
+	// stays zero and a compositor renders the child see-through. Force a 24-bit RGB
+	// visual so the compositor treats the child as opaque.
 	XVisualInfo vinfo;
 	Visual *gl_visual;
 	int32_t gl_depth;

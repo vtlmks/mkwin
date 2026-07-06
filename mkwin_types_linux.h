@@ -33,14 +33,11 @@
 #define MKWIN_DROP_MAX      256
 #define MKWIN_DEFERRED_SIZE 64
 
-// Concurrent outgoing INCR clipboard transfers we can serve at once. One per
-// requestor that pulls a selection too large for a single X request.
+// Concurrent outgoing INCR clipboard transfers, one per requestor pulling an oversized selection.
 #define MKWIN_CLIP_INCR_MAX 8
 
-// One in-flight INCR send: a snapshot of the selection data being streamed to
-// a single requestor, chunk by chunk, as it deletes the property between
-// chunks. data is owned (malloc'd) so a later clipboard change can't pull the
-// rug out from under an active transfer.
+// One in-flight INCR send, streamed to one requestor chunk by chunk. data is
+// owned (malloc'd) so a later clipboard change can't disturb an active transfer.
 struct mkwin_clip_incr {
 	Window requestor;
 	Atom property;
@@ -70,9 +67,8 @@ struct mkwin_atoms {
 	Atom text_uri_list;
 };
 
-// An override-redirect overlay (menu/tooltip/dropdown). mkwin owns the X window
-// and its shared-memory framebuffer; the host draws into mkwin_popup_framebuffer
-// and calls mkwin_popup_present.
+// An override-redirect overlay (menu/tooltip/dropdown); mkwin owns the X window
+// and its shared-memory framebuffer.
 struct mkwin_popup {
 	struct mkwin_window *parent;
 	Window xwin;
@@ -82,9 +78,8 @@ struct mkwin_popup {
 	int32_t x, y, w, h;
 };
 
-// An embedded child window for host-managed OpenGL. mkwin creates and places
-// the X window; the host binds a GL context to it via mkwin_glview_handle +
-// mkwin_display.
+// An embedded child window for host-managed OpenGL; the host binds a GL context
+// via mkwin_glview_handle + mkwin_display.
 struct mkwin_glview {
 	struct mkwin_window *win;
 	Window xwin;
@@ -97,10 +92,10 @@ struct mkwin_font {
 };
 #endif
 
-// The window handle: OS window, its shared-memory framebuffer, DPI scale, the
-// per-window input/deferred-event state, and the resources it owns. Display-
-// level handles (dpy/screen/root/visual/colormap/depth/atoms/xim) are opened by
-// the first window and copied into every later window on the same connection.
+// The window handle: OS window, framebuffer, DPI scale, per-window event state,
+// and owned resources. Display-level handles (dpy/screen/root/visual/colormap/
+// depth/atoms/xim) are opened by the first window and copied into every later
+// window on the same connection.
 struct mkwin_window {
 	Display *dpy;
 	Window root;
