@@ -26,12 +26,12 @@
 // Every window on the shared X connection, so event routing can reach a window
 // that is not the one currently being polled. The first window opens the
 // Display; the last window closed tears it down.
-static struct mkwin_window *g_windows[MKWIN_MAX_WINDOWS];
-static uint32_t g_window_count;
+static struct mkwin_window *windows[MKWIN_MAX_WINDOWS];
+static uint32_t window_count;
 
 // Extra descriptors folded into mkwin_wait beside the X connection (host timers).
-static int32_t g_wait_fds[MKWIN_MAX_WAIT_FDS];
-static uint32_t g_wait_fd_count;
+static int32_t wait_fds[MKWIN_MAX_WAIT_FDS];
+static uint32_t wait_fd_count;
 
 // ---------------------------------------------------------------------------
 // Time
@@ -60,19 +60,19 @@ MKWIN_API uint64_t mkwin_now_ns(void) {
 
 // [=]===^=[ mkwin_register ]======================================[=]
 static void mkwin_register(struct mkwin_window *win) {
-	if(g_window_count < MKWIN_MAX_WINDOWS) {
-		g_windows[g_window_count++] = win;
+	if(window_count < MKWIN_MAX_WINDOWS) {
+		windows[window_count++] = win;
 	}
 }
 
 // [=]===^=[ mkwin_unregister ]====================================[=]
 static void mkwin_unregister(struct mkwin_window *win) {
-	for(uint32_t i = 0; i < g_window_count; ++i) {
-		if(g_windows[i] == win) {
-			for(uint32_t j = i; j + 1 < g_window_count; ++j) {
-				g_windows[j] = g_windows[j + 1];
+	for(uint32_t i = 0; i < window_count; ++i) {
+		if(windows[i] == win) {
+			for(uint32_t j = i; j + 1 < window_count; ++j) {
+				windows[j] = windows[j + 1];
 			}
-			--g_window_count;
+			--window_count;
 			return;
 		}
 	}
@@ -408,7 +408,7 @@ MKWIN_API struct mkwin_window *mkwin_open(struct mkwin_window *parent, const cha
 		strncpy(win->app_class, app_class, sizeof(win->app_class) - 1);
 	}
 
-	if(g_window_count == 0) {
+	if(window_count == 0) {
 		win->dpy = XOpenDisplay(NULL);
 		if(!win->dpy) {
 			free(win);
@@ -447,7 +447,7 @@ MKWIN_API struct mkwin_window *mkwin_open(struct mkwin_window *parent, const cha
 
 		win->xim = XOpenIM(win->dpy, NULL, NULL, NULL);
 	} else {
-		struct mkwin_window *share = g_windows[0];
+		struct mkwin_window *share = windows[0];
 		win->dpy = share->dpy;
 		win->screen = share->screen;
 		win->root = share->root;
@@ -561,7 +561,7 @@ MKWIN_API void mkwin_destroy(struct mkwin_window *win) {
 
 	mkwin_unregister(win);
 
-	if(g_window_count == 0) {
+	if(window_count == 0) {
 		if(win->xim) {
 			XCloseIM(win->xim);
 		}
@@ -908,8 +908,8 @@ MKWIN_API void mkwin_wait(struct mkwin_window *win, int64_t timeout_ns) {
 	pfds[nfds].fd = ConnectionNumber(win->dpy);
 	pfds[nfds].events = POLLIN;
 	++nfds;
-	for(uint32_t i = 0; i < g_wait_fd_count; ++i) {
-		pfds[nfds].fd = g_wait_fds[i];
+	for(uint32_t i = 0; i < wait_fd_count; ++i) {
+		pfds[nfds].fd = wait_fds[i];
 		pfds[nfds].events = POLLIN;
 		++nfds;
 	}
@@ -928,24 +928,24 @@ MKWIN_API void mkwin_wait(struct mkwin_window *win, int64_t timeout_ns) {
 
 // [=]===^=[ mkwin_wait_fd_add ]===================================[=]
 MKWIN_API void mkwin_wait_fd_add(int32_t fd) {
-	for(uint32_t i = 0; i < g_wait_fd_count; ++i) {
-		if(g_wait_fds[i] == fd) {
+	for(uint32_t i = 0; i < wait_fd_count; ++i) {
+		if(wait_fds[i] == fd) {
 			return;
 		}
 	}
-	if(g_wait_fd_count < MKWIN_MAX_WAIT_FDS) {
-		g_wait_fds[g_wait_fd_count++] = fd;
+	if(wait_fd_count < MKWIN_MAX_WAIT_FDS) {
+		wait_fds[wait_fd_count++] = fd;
 	}
 }
 
 // [=]===^=[ mkwin_wait_fd_remove ]================================[=]
 MKWIN_API void mkwin_wait_fd_remove(int32_t fd) {
-	for(uint32_t i = 0; i < g_wait_fd_count; ++i) {
-		if(g_wait_fds[i] == fd) {
-			for(uint32_t j = i; j + 1 < g_wait_fd_count; ++j) {
-				g_wait_fds[j] = g_wait_fds[j + 1];
+	for(uint32_t i = 0; i < wait_fd_count; ++i) {
+		if(wait_fds[i] == fd) {
+			for(uint32_t j = i; j + 1 < wait_fd_count; ++j) {
+				wait_fds[j] = wait_fds[j + 1];
 			}
-			--g_wait_fd_count;
+			--wait_fd_count;
 			return;
 		}
 	}
@@ -1177,8 +1177,8 @@ static uint32_t mkwin_clip_incr_begin(struct mkwin_window *win, Window requestor
 	if(win->incr_send_count >= MKWIN_CLIP_INCR_MAX) {
 		return 0;
 	}
-	for(uint32_t i = 0; i < g_window_count; ++i) {
-		if(g_windows[i]->win == requestor) {
+	for(uint32_t i = 0; i < window_count; ++i) {
+		if(windows[i]->win == requestor) {
 			return 0;
 		}
 	}
@@ -1208,8 +1208,8 @@ static uint32_t mkwin_clip_incr_begin(struct mkwin_window *win, Window requestor
 // next chunk (a final zero-length chunk ends the stream). Returns 1 if the event
 // belonged to a transfer we are driving.
 static uint32_t mkwin_clip_incr_continue(XPropertyEvent *pe) {
-	for(uint32_t w = 0; w < g_window_count; ++w) {
-		struct mkwin_window *win = g_windows[w];
+	for(uint32_t w = 0; w < window_count; ++w) {
+		struct mkwin_window *win = windows[w];
 		for(uint32_t i = 0; i < win->incr_send_count; ++i) {
 			struct mkwin_clip_incr *e = &win->incr_send[i];
 			if(e->requestor != pe->window || e->property != pe->atom) {
@@ -1554,8 +1554,8 @@ static void mkwin_translate_xevent(struct mkwin_window *owner, XEvent *xev, stru
 // [=]===^=[ mkwin_find_window_owner ]=============================[=]
 static struct mkwin_window *mkwin_find_window_owner(Window xwin, int32_t *popup_idx) {
 	*popup_idx = -1;
-	for(uint32_t i = 0; i < g_window_count; ++i) {
-		struct mkwin_window *c = g_windows[i];
+	for(uint32_t i = 0; i < window_count; ++i) {
+		struct mkwin_window *c = windows[i];
 		if(c->win == xwin) {
 			return c;
 		}

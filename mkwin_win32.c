@@ -12,10 +12,10 @@
 // Library state
 // ---------------------------------------------------------------------------
 
-static struct mkwin_window *g_windows[MKWIN_MAX_WINDOWS];
-static uint32_t g_window_count;
-static uint32_t g_class_registered;
-static uint32_t g_glview_class_registered;
+static struct mkwin_window *windows[MKWIN_MAX_WINDOWS];
+static uint32_t window_count;
+static uint32_t class_registered;
+static uint32_t glview_class_registered;
 
 // ---------------------------------------------------------------------------
 // Time
@@ -49,19 +49,19 @@ MKWIN_API uint64_t mkwin_now_ns(void) {
 
 // [=]===^=[ mkwin_register ]======================================[=]
 static void mkwin_register(struct mkwin_window *win) {
-	if(g_window_count < MKWIN_MAX_WINDOWS) {
-		g_windows[g_window_count++] = win;
+	if(window_count < MKWIN_MAX_WINDOWS) {
+		windows[window_count++] = win;
 	}
 }
 
 // [=]===^=[ mkwin_unregister ]====================================[=]
 static void mkwin_unregister(struct mkwin_window *win) {
-	for(uint32_t i = 0; i < g_window_count; ++i) {
-		if(g_windows[i] == win) {
-			for(uint32_t j = i; j + 1 < g_window_count; ++j) {
-				g_windows[j] = g_windows[j + 1];
+	for(uint32_t i = 0; i < window_count; ++i) {
+		if(windows[i] == win) {
+			for(uint32_t j = i; j + 1 < window_count; ++j) {
+				windows[j] = windows[j + 1];
 			}
-			--g_window_count;
+			--window_count;
 			return;
 		}
 	}
@@ -244,8 +244,8 @@ static uint32_t mkwin_get_keymod(void) {
 // [=]===^=[ mkwin_find_owner ]====================================[=]
 static struct mkwin_window *mkwin_find_owner(HWND hwnd, int32_t *popup_idx) {
 	*popup_idx = -1;
-	for(uint32_t i = 0; i < g_window_count; ++i) {
-		struct mkwin_window *c = g_windows[i];
+	for(uint32_t i = 0; i < window_count; ++i) {
+		struct mkwin_window *c = windows[i];
 		if(c->hwnd == hwnd) {
 			return c;
 		}
@@ -536,7 +536,7 @@ static void mkwin_set_dpi_aware(void) {
 
 // [=]===^=[ mkwin_register_class ]================================[=]
 static void mkwin_register_class(void) {
-	if(g_class_registered) {
+	if(class_registered) {
 		return;
 	}
 	mkwin_set_dpi_aware();
@@ -548,7 +548,7 @@ static void mkwin_register_class(void) {
 	wc.hCursor = LoadCursorA(NULL, IDC_ARROW);
 	wc.lpszClassName = "mkwin";
 	RegisterClassExA(&wc);
-	g_class_registered = 1;
+	class_registered = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -1334,7 +1334,7 @@ MKWIN_API struct mkwin_glview *mkwin_glview_create(struct mkwin_window *win, int
 	if(win->glview_count >= MKWIN_MAX_GLVIEWS) {
 		return NULL;
 	}
-	if(!g_glview_class_registered) {
+	if(!glview_class_registered) {
 		WNDCLASSEXA wc;
 		memset(&wc, 0, sizeof(wc));
 		wc.cbSize = sizeof(wc);
@@ -1342,7 +1342,7 @@ MKWIN_API struct mkwin_glview *mkwin_glview_create(struct mkwin_window *win, int
 		wc.lpfnWndProc = mkwin_glview_wndproc;
 		wc.lpszClassName = "mkwin_glview";
 		RegisterClassExA(&wc);
-		g_glview_class_registered = 1;
+		glview_class_registered = 1;
 	}
 	struct mkwin_glview *view = (struct mkwin_glview *)calloc(1, sizeof(*view));
 	if(!view) {
