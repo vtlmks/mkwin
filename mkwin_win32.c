@@ -889,6 +889,14 @@ static void mkwin_blit_exclude_glviews(struct mkwin_window *win, HDC hdc) {
 	}
 }
 
+// [=]===^=[ mkwin_begin_frame ]===================================[=]
+MKWIN_API uint32_t mkwin_begin_frame(struct mkwin_window *win) {
+	(void)win;
+	GdiFlush();
+	return 1;
+
+}
+
 // [=]===^=[ mkwin_present ]=======================================[=]
 MKWIN_API void mkwin_present(struct mkwin_window *win) {
 	HDC hdc = GetDC(win->hwnd);

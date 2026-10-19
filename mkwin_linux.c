@@ -28,6 +28,7 @@
 // tears it down.
 static struct mkwin_window *windows[MKWIN_MAX_WINDOWS];
 static uint32_t window_count;
+static int shm_completion_type;
 
 // Extra descriptors folded into mkwin_wait beside the X connection (host timers).
 static int32_t wait_fds[MKWIN_MAX_WAIT_FDS];
@@ -200,40 +201,93 @@ MKWIN_API const char *mkwin_drop_path(struct mkwin_window *win, uint32_t index) 
 // [=]===^=[ mkwin_fb_create ]=====================================[=]
 static uint32_t mkwin_fb_create(struct mkwin_window *win, XShmSegmentInfo *shm, XImage **img, uint32_t **pixels, int32_t w, int32_t h, size_t *out_cap) {
 	*img = XShmCreateImage(win->dpy, win->visual, win->depth, ZPixmap, NULL, shm, (uint32_t)w, (uint32_t)h);
-	if(!*img) {
-		return 0;
-	}
-	size_t bytes = (size_t)((*img)->bytes_per_line * h);
-	shm->shmid = shmget(IPC_PRIVATE, bytes, IPC_CREAT | 0600);
-	if(shm->shmid < 0) {
+
+	if(*img) {
+		size_t bytes = (size_t)(*img)->bytes_per_line * (size_t)h;
+		shm->shmid = shmget(IPC_PRIVATE, bytes, IPC_CREAT | 0600);
+
+		if(shm->shmid >= 0) {
+			shm->shmaddr = shmat(shm->shmid, NULL, 0);
+
+			if(shm->shmaddr != (void *)-1) {
+				shm->readOnly = False;
+
+				if(XShmAttach(win->dpy, shm)) {
+					XSync(win->dpy, False);
+					memset(shm->shmaddr, 0, bytes);
+					(*img)->data = shm->shmaddr;
+					*pixels = (uint32_t *)shm->shmaddr;
+
+					if(out_cap) {
+						*out_cap = bytes;
+
+					}
+
+					return 1;
+
+				} else {
+					fprintf(stderr, "mkwin: XShmAttach failed\n");
+
+				}
+
+				shmdt(shm->shmaddr);
+
+			} else {
+				perror("mkwin: shmat");
+
+			}
+
+			shmctl(shm->shmid, IPC_RMID, NULL);
+
+		} else {
+			perror("mkwin: shmget");
+
+		}
+
 		XDestroyImage(*img);
 		*img = NULL;
-		return 0;
+
+	} else {
+		fprintf(stderr, "mkwin: XShmCreateImage failed\n");
+
 	}
-	shm->shmaddr = (char *)shmat(shm->shmid, NULL, 0);
-	memset(shm->shmaddr, 0, bytes);
-	(*img)->data = shm->shmaddr;
-	shm->readOnly = False;
-	XShmAttach(win->dpy, shm);
-	XSync(win->dpy, False);
-	*pixels = (uint32_t *)shm->shmaddr;
-	if(out_cap) {
-		*out_cap = bytes;
-	}
-	return 1;
+
+	return 0;
+
 }
 
 // [=]===^=[ mkwin_fb_destroy ]====================================[=]
 static void mkwin_fb_destroy(struct mkwin_window *win, XShmSegmentInfo *shm, XImage *img) {
 	if(!img) {
 		return;
+
 	}
+
 	XShmDetach(win->dpy, shm);
 	XSync(win->dpy, False);
 	shmdt(shm->shmaddr);
 	shmctl(shm->shmid, IPC_RMID, NULL);
 	img->data = NULL;
 	XDestroyImage(img);
+
+}
+
+// [=]===^=[ mkwin_fb_event_matches ]=============================[=]
+static Bool mkwin_fb_event_matches(Display *display, XEvent *event, XPointer argument) {
+	XShmSegmentInfo *shm = (XShmSegmentInfo *)argument;
+	(void)display;
+	return event->type == shm_completion_type && ((XShmCompletionEvent *)event)->shmseg == shm->shmseg;
+
+}
+
+// [=]===^=[ mkwin_fb_wait ]======================================[=]
+static void mkwin_fb_wait(struct mkwin_window *win, XShmSegmentInfo *shm, uint64_t *pending) {
+	while(*pending) {
+		XEvent event;
+		XIfEvent(win->dpy, &event, mkwin_fb_event_matches, (XPointer)shm);
+		--*pending;
+
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -337,48 +391,99 @@ static float mkwin_detect_scale(struct mkwin_window *win) {
 // Framebuffer resize
 // ---------------------------------------------------------------------------
 
-// [=]===^=[ mkwin_fb_resize ]=====================================[=]
-// Keep the shared segment across resizes and reallocate only when the new frame
-// no longer fits (over-allocating 1.5x), so a continuous drag does not thrash
-// shmget/XShmAttach round-trips per ConfigureNotify. The XImage header is cheap,
-// so rebuild it every time to carry the new dimensions.
+// [=]===^=[ mkwin_fb_resize_buffer ]=============================[=]
+static uint32_t mkwin_fb_resize_buffer(struct mkwin_window *win, struct mkwin_framebuffer *buffer) {
+	mkwin_fb_wait(win, &buffer->shm, &buffer->pending);
+	XImage *img = XShmCreateImage(win->dpy, win->visual, win->depth, ZPixmap, NULL, &buffer->shm, (uint32_t)win->win_w, (uint32_t)win->win_h);
+
+	if(img) {
+		size_t need = (size_t)img->bytes_per_line * (size_t)win->win_h;
+
+		if(need <= buffer->capacity) {
+			buffer->img->data = NULL;
+			XDestroyImage(buffer->img);
+			img->data = buffer->shm.shmaddr;
+			buffer->img = img;
+			buffer->frame_serial = 0;
+			return 1;
+
+		}
+
+		size_t capacity = need + need / 2;
+		XShmSegmentInfo shm = {0};
+		shm.shmid = shmget(IPC_PRIVATE, capacity, IPC_CREAT | 0600);
+
+		if(shm.shmid >= 0) {
+			shm.shmaddr = shmat(shm.shmid, NULL, 0);
+
+			if(shm.shmaddr != (void *)-1) {
+				shm.readOnly = False;
+
+				if(XShmAttach(win->dpy, &shm)) {
+					XSync(win->dpy, False);
+					mkwin_fb_destroy(win, &buffer->shm, buffer->img);
+					buffer->shm = shm;
+					buffer->img = img;
+					buffer->capacity = capacity;
+					buffer->pixels = (uint32_t *)shm.shmaddr;
+					buffer->frame_serial = 0;
+					img->data = shm.shmaddr;
+					memset(buffer->pixels, 0, need);
+					return 1;
+
+				} else {
+					fprintf(stderr, "mkwin: XShmAttach failed during resize\n");
+
+				}
+
+				shmdt(shm.shmaddr);
+
+			} else {
+				perror("mkwin: resize shmat");
+
+			}
+
+			shmctl(shm.shmid, IPC_RMID, NULL);
+
+		} else {
+			perror("mkwin: resize shmget");
+
+		}
+
+		XDestroyImage(img);
+
+	} else {
+		fprintf(stderr, "mkwin: XShmCreateImage failed during resize\n");
+
+	}
+
+	return 0;
+
+}
+
+// [=]===^=[ mkwin_fb_resize ]====================================[=]
 static void mkwin_fb_resize(struct mkwin_window *win) {
 	if(win->win_w <= 0 || win->win_h <= 0) {
 		return;
+
 	}
-	XImage *img = XShmCreateImage(win->dpy, win->visual, win->depth, ZPixmap, NULL, &win->shm, (uint32_t)win->win_w, (uint32_t)win->win_h);
-	if(!img) {
-		return;
-	}
-	size_t need = (size_t)(img->bytes_per_line * win->win_h);
-	if(win->img) {
-		win->img->data = NULL;
-		XDestroyImage(win->img);
-		win->img = NULL;
-	}
-	if(need > win->shm_cap) {
-		if(win->shm_cap) {
-			XShmDetach(win->dpy, &win->shm);
-			XSync(win->dpy, False);
-			shmdt(win->shm.shmaddr);
-			shmctl(win->shm.shmid, IPC_RMID, NULL);
-			win->shm_cap = 0;
+
+	if(mkwin_fb_resize_buffer(win, &win->buffers[0])) {
+		if(win->buffers[1].img && !mkwin_fb_resize_buffer(win, &win->buffers[1])) {
+			mkwin_fb_destroy(win, &win->buffers[1].shm, win->buffers[1].img);
+			memset(&win->buffers[1], 0, sizeof(win->buffers[1]));
+
 		}
-		size_t cap = need + need / 2;
-		win->shm.shmid = shmget(IPC_PRIVATE, cap, IPC_CREAT | 0600);
-		if(win->shm.shmid < 0) {
-			XDestroyImage(img);
-			return;
-		}
-		win->shm.shmaddr = (char *)shmat(win->shm.shmid, NULL, 0);
-		win->shm.readOnly = False;
-		XShmAttach(win->dpy, &win->shm);
-		XSync(win->dpy, False);
-		win->shm_cap = cap;
+
+		win->buffer_index = 0;
+		win->frame_serial = 0;
+		win->pixels = win->buffers[0].pixels;
+
+	} else {
+		win->win_w = win->buffers[0].img->width;
+		win->win_h = win->buffers[0].img->height;
+
 	}
-	img->data = win->shm.shmaddr;
-	win->img = img;
-	win->pixels = (uint32_t *)win->shm.shmaddr;
 }
 
 // ---------------------------------------------------------------------------
@@ -485,8 +590,6 @@ MKWIN_API struct mkwin_window *mkwin_open(struct mkwin_window *parent, const cha
 	win->win_w = w;
 	win->win_h = h;
 
-	mkwin_fb_create(win, &win->shm, &win->img, &win->pixels, w, h, &win->shm_cap);
-
 	{
 		XSizeHints hints = {0};
 		hints.flags = PMinSize;
@@ -514,8 +617,22 @@ MKWIN_API struct mkwin_window *mkwin_open(struct mkwin_window *parent, const cha
 	XFlush(win->dpy);
 
 	mkwin_register(win);
-	mkwin_publish(win);
-	return win;
+	shm_completion_type = XShmGetEventBase(win->dpy) + ShmCompletion;
+	struct mkwin_framebuffer *first = &win->buffers[0];
+	struct mkwin_framebuffer *second = &win->buffers[1];
+
+	if(mkwin_fb_create(win, &first->shm, &first->img, &first->pixels, w, h, &first->capacity)) {
+		if(mkwin_fb_create(win, &second->shm, &second->img, &second->pixels, w, h, &second->capacity)) {
+			win->pixels = first->pixels;
+			mkwin_publish(win);
+			return win;
+
+		}
+	}
+
+	mkwin_destroy(win);
+	return NULL;
+
 }
 
 // [=]===^=[ mkwin_map ]===========================================[=]
@@ -541,9 +658,11 @@ MKWIN_API void mkwin_destroy(struct mkwin_window *win) {
 	drop_free(win);
 	free(win->clip_text);
 
-	mkwin_fb_destroy(win, &win->shm, win->img);
-	win->img = NULL;
-	win->shm_cap = 0;
+	for(uint32_t i = 0; i < 2; ++i) {
+		mkwin_fb_wait(win, &win->buffers[i].shm, &win->buffers[i].pending);
+		mkwin_fb_destroy(win, &win->buffers[i].shm, win->buffers[i].img);
+
+	}
 	XFreeCursor(win->dpy, win->cursor_default);
 	XFreeCursor(win->dpy, win->cursor_h_resize);
 	XFreeCursor(win->dpy, win->cursor_v_resize);
@@ -717,10 +836,37 @@ MKWIN_API uint32_t mkwin_is_child(struct mkwin_window *win) {
 // Presentation
 // ---------------------------------------------------------------------------
 
+// [=]===^=[ mkwin_begin_frame ]===================================[=]
+MKWIN_API uint32_t mkwin_begin_frame(struct mkwin_window *win) {
+	uint32_t index = win->frame_serial ? win->buffer_index ^ 1u : 0;
+	struct mkwin_framebuffer *buffer = &win->buffers[index];
+
+	if(!buffer->img) {
+		if(!mkwin_fb_create(win, &buffer->shm, &buffer->img, &buffer->pixels, win->win_w, win->win_h, &buffer->capacity)) {
+			index = win->buffer_index;
+			buffer = &win->buffers[index];
+
+		}
+	}
+
+	mkwin_fb_wait(win, &buffer->shm, &buffer->pending);
+	++win->frame_serial;
+	uint32_t age = buffer->frame_serial ? (uint32_t)(win->frame_serial - buffer->frame_serial) : 0;
+	buffer->frame_serial = win->frame_serial;
+	win->buffer_index = index;
+	win->pixels = buffer->pixels;
+	mkwin_publish(win);
+	return age;
+
+}
+
 // [=]===^=[ mkwin_present ]=======================================[=]
 MKWIN_API void mkwin_present(struct mkwin_window *win) {
-	XShmPutImage(win->dpy, win->win, win->gc, win->img, 0, 0, 0, 0, (uint32_t)win->win_w, (uint32_t)win->win_h, False);
+	struct mkwin_framebuffer *buffer = &win->buffers[win->buffer_index];
+	XShmPutImage(win->dpy, win->win, win->gc, buffer->img, 0, 0, 0, 0, (uint32_t)win->win_w, (uint32_t)win->win_h, True);
+	++buffer->pending;
 	XFlush(win->dpy);
+
 }
 
 // [=]===^=[ mkwin_present_region ]================================[=]
@@ -728,22 +874,35 @@ MKWIN_API void mkwin_present_region(struct mkwin_window *win, int32_t x, int32_t
 	if(x < 0) {
 		w += x;
 		x = 0;
+
 	}
+
 	if(y < 0) {
 		h += y;
 		y = 0;
+
 	}
+
 	if(x + w > win->win_w) {
 		w = win->win_w - x;
+
 	}
+
 	if(y + h > win->win_h) {
 		h = win->win_h - y;
+
 	}
+
 	if(w <= 0 || h <= 0) {
 		return;
+
 	}
-	XShmPutImage(win->dpy, win->win, win->gc, win->img, x, y, x, y, (uint32_t)w, (uint32_t)h, False);
+
+	struct mkwin_framebuffer *buffer = &win->buffers[win->buffer_index];
+	XShmPutImage(win->dpy, win->win, win->gc, buffer->img, x, y, x, y, (uint32_t)w, (uint32_t)h, True);
+	++buffer->pending;
 	XFlush(win->dpy);
+
 }
 
 // [=]===^=[ mkwin_flush ]=========================================[=]
@@ -754,6 +913,14 @@ MKWIN_API void mkwin_flush(struct mkwin_window *win) {
 // [=]===^=[ mkwin_sync ]==========================================[=]
 MKWIN_API void mkwin_sync(struct mkwin_window *win) {
 	XSync(win->dpy, False);
+
+	for(uint32_t i = 0; i < window_count; ++i) {
+		for(uint32_t j = 0; j < 2; ++j) {
+			struct mkwin_framebuffer *buffer = &windows[i]->buffers[j];
+			mkwin_fb_wait(windows[i], &buffer->shm, &buffer->pending);
+
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -805,8 +972,11 @@ MKWIN_API uint32_t *mkwin_popup_framebuffer(struct mkwin_popup *popup) {
 // [=]===^=[ mkwin_popup_present ]=================================[=]
 MKWIN_API void mkwin_popup_present(struct mkwin_popup *popup) {
 	struct mkwin_window *parent = popup->parent;
-	XShmPutImage(parent->dpy, popup->xwin, parent->gc, popup->img, 0, 0, 0, 0, (uint32_t)popup->w, (uint32_t)popup->h, False);
+	uint64_t pending = 1;
+	XShmPutImage(parent->dpy, popup->xwin, parent->gc, popup->img, 0, 0, 0, 0, (uint32_t)popup->w, (uint32_t)popup->h, True);
 	XFlush(parent->dpy);
+	mkwin_fb_wait(parent, &popup->shm, &pending);
+
 }
 
 // [=]===^=[ mkwin_popup_close ]===================================[=]
@@ -1579,6 +1749,25 @@ MKWIN_API uint32_t mkwin_poll(struct mkwin_window *win, struct mkwin_event *ev) 
 
 	XEvent xev;
 	XNextEvent(win->dpy, &xev);
+
+	if(xev.type == shm_completion_type) {
+		XShmCompletionEvent *completion = (XShmCompletionEvent *)&xev;
+
+		for(uint32_t i = 0; i < window_count; ++i) {
+			for(uint32_t j = 0; j < 2; ++j) {
+				struct mkwin_framebuffer *buffer = &windows[i]->buffers[j];
+
+				if(buffer->img && buffer->shm.shmseg == completion->shmseg) {
+					--buffer->pending;
+					return 1;
+
+				}
+			}
+		}
+
+		return 1;
+
+	}
 
 	// An in-flight INCR send is paced by the requestor deleting our property;
 	// those PropertyNotify events carry the requestor's (foreign) window, so

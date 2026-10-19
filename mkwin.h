@@ -88,7 +88,7 @@ enum {
 // mkwin owns the framebuffer, dimensions and scale, but the host reads them on
 // every frame. To spare a large host from routing thousands of reads through
 // accessors, it may hand mkwin_open the addresses of its own fields; mkwin
-// writes through them whenever the value changes (open, resize, DPI change).
+// writes through them whenever the value changes (open, resize, DPI change, buffer acquisition).
 // All pointers are optional - pass a zeroed struct to use the accessors below
 // exclusively. The accessors are always valid regardless.
 struct mkwin_host {
@@ -130,6 +130,11 @@ MKWIN_API void mkwin_destroy(struct mkwin_window *win);
 // ---------------------------------------------------------------------------
 
 MKWIN_API uint32_t *mkwin_framebuffer(struct mkwin_window *win);
+// Acquire a writable framebuffer before drawing and refresh host.out_fb. The returned
+// age is the number of frames since this buffer was last acquired, or zero for undefined
+// contents. Preserve damage history or redraw fully when reusing an older buffer.
+// Call once per frame, before drawing and any present/present_region calls for that frame.
+MKWIN_API uint32_t mkwin_begin_frame(struct mkwin_window *win);
 MKWIN_API void mkwin_size(struct mkwin_window *win, int32_t *out_w, int32_t *out_h);
 MKWIN_API float mkwin_scale(struct mkwin_window *win);
 MKWIN_API void mkwin_present(struct mkwin_window *win);

@@ -75,9 +75,11 @@ then build with `-Imkwin` so the `#include`s resolve.
 mkwin owns the framebuffer, dimensions and DPI scale, but a host reads them every
 frame. Rather than route every read through an accessor, you may hand `mkwin_open`
 the addresses of your own fields via `struct mkwin_host`; mkwin writes through
-them whenever a value changes (open, resize, DPI change). Pass a zeroed struct (or
+them whenever a value changes (open, resize, DPI change, buffer acquisition). Pass a zeroed struct (or
 `NULL`) to use the accessors (`mkwin_framebuffer`, `mkwin_size`, `mkwin_scale`)
 exclusively - they are always valid.
+
+On Linux, `mkwin_begin_frame()` alternates two XShm images and waits for completion only when reusing a busy image. It refreshes the published pixel pointer and returns the buffer age: zero for undefined contents, one for the immediately preceding frame, or two for a buffer last used two frames ago. Full redraws can ignore the age; partial redraws must repair changes made since that buffer was last used. `mkwin_present()` and `mkwin_present_region()` submit asynchronously. On Windows, acquisition retains the DIB and returns age one.
 
 ## Minimal example
 
@@ -107,6 +109,8 @@ int main(void) {
 			}
 			// fb / w / h are already up to date after MKWIN_EV_RESIZE
 		}
+
+		mkwin_begin_frame(win);
 
 		for(int32_t i = 0; i < w * h; ++i) {
 			fb[i] = 0x00204060;         // one 0x00RRGGBB pixel per element

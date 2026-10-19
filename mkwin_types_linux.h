@@ -92,6 +92,15 @@ struct mkwin_font {
 };
 #endif
 
+struct mkwin_framebuffer {
+	XShmSegmentInfo shm;
+	XImage *img;
+	size_t capacity;
+	uint32_t *pixels;
+	uint64_t pending;
+	uint64_t frame_serial;
+};
+
 // The window handle: OS window, framebuffer, DPI scale, per-window event state,
 // and owned resources. Display-level handles (dpy/screen/root/visual/colormap/
 // depth/atoms/xim) are opened by the first window and copied into every later
@@ -110,9 +119,9 @@ struct mkwin_window {
 	XIC xic;
 
 	// Framebuffer (owned).
-	XShmSegmentInfo shm;
-	XImage *img;
-	size_t shm_cap;
+	struct mkwin_framebuffer buffers[2];
+	uint32_t buffer_index;
+	uint64_t frame_serial;
 	uint32_t *pixels;
 	int32_t win_w, win_h;
 	float scale;
